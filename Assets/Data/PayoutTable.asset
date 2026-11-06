@@ -1,0 +1,37 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: dde08a785cb057949a69c1c7c873b062, type: 3}
+  m_Name: PayoutTable
+  m_EditorClassIdentifier: SlotMachine.Config:PayoutTable
+  _symbols:
+  - {fileID: 11400000, guid: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a0001, type: 3}
+  - {fileID: 11400000, guid: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a0002, type: 3}
+  - {fileID: 11400000, guid: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a0003, type: 3}
+  - {fileID: 11400000, guid: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a0004, type: 3}
+  _rules:
+  - Symbol: 0
+    MatchCount: 3
+    PayoutMultiplier: 5
+    WinDescription: 3x Symbol 1
+  - Symbol: 1
+    MatchCount: 3
+    PayoutMultiplier: 10
+    WinDescription: 3x Symbol 2
+  - Symbol: 2
+    MatchCount: 3
+    PayoutMultiplier: 20
+    WinDescription: 3x Symbol 3
+  - Symbol: 3
+    MatchCount: 3
+    PayoutMultiplier: 50
+    WinDescription: JACKPOT! 3x Symbol 4
+
