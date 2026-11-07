@@ -22,9 +22,6 @@ namespace SlotMachine.UI
         [SerializeField] private SlotMachineController _controller;
 
         [Header("Interactive Buttons")]
-        [Tooltip("Main button triggering spin (optional if playing via lever pull).")]
-        [SerializeField] private Button _spinButton;
-
         [Tooltip("Button incrementing current bet.")]
         [SerializeField] private Button _betUpButton;
 
@@ -61,9 +58,14 @@ namespace SlotMachine.UI
         [SerializeField] private string _idlePromptMessage = "PULL LEVER TO PLAY";
         [SerializeField] private string _spinningMessage = "GOOD LUCK!";
 
+        [Header("Rolling Count-Up Settings")]
+        [SerializeField] private float _countUpDuration = 0.8f;
+
         private int _cachedBalance = -1;
         private int _cachedBet = -1;
         private int _cachedWin = -1;
+        private int _displayedBalance = -1;
+        private Coroutine _countUpRoutine;
 
         private void Awake()
         {
@@ -100,11 +102,6 @@ namespace SlotMachine.UI
 
         private void BindButtonCallbacks()
         {
-            if (_spinButton != null)
-            {
-                _spinButton.onClick.AddListener(OnSpinClicked);
-            }
-
             if (_betUpButton != null)
             {
                 _betUpButton.onClick.AddListener(OnBetUpClicked);
@@ -201,6 +198,8 @@ namespace SlotMachine.UI
         {
             if (_controller == null) return;
 
+            SlotMachine.Audio.AudioManager.Instance?.PlayButtonClick();
+
             if (_controller.State == SlotMachineState.Idle)
             {
                 _controller.Spin();
@@ -215,6 +214,7 @@ namespace SlotMachine.UI
         {
             if (_controller != null && _controller.CanChangeBet)
             {
+                SlotMachine.Audio.AudioManager.Instance?.PlayButtonClick();
                 _controller.IncreaseBet();
             }
         }
@@ -223,6 +223,7 @@ namespace SlotMachine.UI
         {
             if (_controller != null && _controller.CanChangeBet)
             {
+                SlotMachine.Audio.AudioManager.Instance?.PlayButtonClick();
                 _controller.DecreaseBet();
             }
         }
@@ -231,6 +232,7 @@ namespace SlotMachine.UI
         {
             if (_controller != null && _controller.CanChangeBet)
             {
+                SlotMachine.Audio.AudioManager.Instance?.PlayButtonClick();
                 _controller.SetMaxBet();
             }
         }
@@ -263,13 +265,65 @@ namespace SlotMachine.UI
 
         private void HandleBalanceChanged(int balance)
         {
-            if (_balanceText != null && _cachedBalance != balance)
+            if (_cachedBalance < 0)
             {
+                // Initial load
                 _cachedBalance = balance;
-                _balanceText.SetText(_balanceFormat, balance);
+                _displayedBalance = balance;
+                if (_balanceText != null) _balanceText.SetText(_balanceFormat, balance);
+            }
+            else if (balance > _displayedBalance && gameObject.activeInHierarchy)
+            {
+                // Win count-up
+                if (_countUpRoutine != null) StopCoroutine(_countUpRoutine);
+                _countUpRoutine = StartCoroutine(RollingCountUpRoutine(_displayedBalance, balance, _countUpDuration));
+                _cachedBalance = balance;
+            }
+            else
+            {
+                // Immediate deduct or balance reset
+                if (_countUpRoutine != null)
+                {
+                    StopCoroutine(_countUpRoutine);
+                    _countUpRoutine = null;
+                }
+                _cachedBalance = balance;
+                _displayedBalance = balance;
+                if (_balanceText != null) _balanceText.SetText(_balanceFormat, balance);
             }
 
             UpdateButtonStates(_controller != null ? _controller.State : SlotMachineState.Idle);
+        }
+
+        private System.Collections.IEnumerator RollingCountUpRoutine(int fromBalance, int toBalance, float duration)
+        {
+            float elapsed = 0f;
+            int lastSoundValue = fromBalance;
+
+            while (elapsed < duration)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.Clamp01(elapsed / duration);
+                float ease = 1f - (1f - t) * (1f - t) * (1f - t);
+                int current = Mathf.RoundToInt(Mathf.Lerp(fromBalance, toBalance, ease));
+
+                if (current != _displayedBalance)
+                {
+                    _displayedBalance = current;
+                    if (_balanceText != null) _balanceText.SetText(_balanceFormat, current);
+
+                    if (Mathf.Abs(current - lastSoundValue) >= Mathf.Max(1, (toBalance - fromBalance) / 12))
+                    {
+                        lastSoundValue = current;
+                        SlotMachine.Audio.AudioManager.Instance?.PlayCoinTick();
+                    }
+                }
+                yield return null;
+            }
+
+            _displayedBalance = toBalance;
+            if (_balanceText != null) _balanceText.SetText(_balanceFormat, toBalance);
+            _countUpRoutine = null;
         }
 
         private void HandleBetChanged(int bet)
@@ -296,12 +350,12 @@ namespace SlotMachine.UI
             if (outcome.IsWin)
             {
                 UpdateLastWinText(outcome.PayoutAmount);
-                SetStatusText(string.IsNullOrEmpty(outcome.Message) ? "WINNER!" : outcome.Message);
+                SetStatusText(GetCleanWinMessage(outcome));
             }
             else
             {
                 UpdateLastWinText(0);
-                SetStatusText(outcome.Message);
+                SetStatusText(string.IsNullOrEmpty(outcome.Message) ? "TRY AGAIN!" : outcome.Message);
             }
         }
 
@@ -309,7 +363,17 @@ namespace SlotMachine.UI
         {
             SetLeverState(true, false);
             UpdateLastWinText(outcome.PayoutAmount);
-            SetStatusText(string.IsNullOrEmpty(outcome.Message) ? "WINNER!" : outcome.Message);
+            SetStatusText(GetCleanWinMessage(outcome));
+        }
+
+        private string GetCleanWinMessage(SpinOutcome outcome)
+        {
+            string msg = outcome.Message;
+            if (string.IsNullOrEmpty(msg) || msg.Contains("Symbol") || msg.Contains("3x"))
+            {
+                return outcome.PayoutAmount >= 500 ? "JACKPOT!" : outcome.PayoutAmount >= 200 ? "MEGA WIN!" : "WINNER!";
+            }
+            return msg;
         }
 
         private void SetLeverState(bool armActive, bool baseActive)
@@ -330,18 +394,6 @@ namespace SlotMachine.UI
             if (_controller == null) return;
 
             bool isIdle = (state == SlotMachineState.Idle);
-
-            if (_spinButton != null)
-            {
-                if (isIdle)
-                {
-                    _spinButton.interactable = _controller.CanSpin;
-                }
-                else
-                {
-                    _spinButton.interactable = false;
-                }
-            }
 
             if (_betUpButton != null)
             {

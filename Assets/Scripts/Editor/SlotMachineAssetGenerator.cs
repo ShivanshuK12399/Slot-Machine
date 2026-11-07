@@ -57,7 +57,7 @@ namespace SlotMachine.Editor
                     Symbol = cfg.Type,
                     MatchCount = 3,
                     PayoutMultiplier = cfg.Multiplier,
-                    WinDescription = cfg.Multiplier >= 50 ? $"JACKPOT! 3x {cfg.Name}" : $"3x {cfg.Name}"
+                    WinDescription = cfg.Multiplier >= 50 ? "JACKPOT!" : cfg.Multiplier >= 20 ? "MEGA WIN!" : cfg.Multiplier >= 10 ? "SUPER WIN!" : "BIG WIN!"
                 });
             }
 

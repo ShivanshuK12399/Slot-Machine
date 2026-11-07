@@ -54,6 +54,7 @@ namespace SlotMachine.Reel
         private float _brakeDuration;
         private float _bounceDuration;
         private float _bounceHeight;
+        private float _lastTickDistance;
 
         // Target stop data
         private bool _isStopping;
@@ -166,6 +167,7 @@ namespace SlotMachine.Reel
             _distance = 0f;
             _speed = 0f;
             _timer = 0f;
+            _lastTickDistance = 0f;
             _isStopping = false;
             _state = ReelState.SpinUp;
 
@@ -177,6 +179,7 @@ namespace SlotMachine.Reel
 
         /// <summary>
         /// Commands this reel to stop on the target symbol using the active physical stopping mode.
+        /// Both modes execute a smooth gradual deceleration ramp so physical movement and audio clicks slow down.
         /// </summary>
         public void Stop(SymbolType targetSymbol)
         {
@@ -189,34 +192,32 @@ namespace SlotMachine.Reel
             float spacing = Mathf.Max(1f, ItemSpacing);
             ReelStopMode mode = _group != null ? _group.StopMode : ReelStopMode.MechanicalPawl;
 
+            _brakeDuration = 0.50f;
+            float estDist = _maxSpeed * 0.5f * _brakeDuration;
+            int targetStep = Mathf.CeilToInt((_distance + estDist) / spacing) + 1;
+            _targetDistance = targetStep * spacing;
+            _targetSlot = ((targetStep + _centerSlot) % count + count) % count;
+
+            float totalDist = _targetDistance - _distance;
+            _brakeDuration = Mathf.Max(0.2f, (2f * totalDist) / _maxSpeed);
+
+            _startDistance = _distance;
+            _timer = 0f;
+
             if (mode == ReelStopMode.MechanicalPawl)
             {
-                // Mode 1: Authentic Mechanical Pawl
-                // Spins at full speed until the target step, then drops pawl with spring recoil bounce
-                float currentStep = _distance / spacing;
-                int targetStep = Mathf.CeilToInt(currentStep) + 5;
-                _targetDistance = targetStep * spacing;
-                _targetSlot = ((targetStep + _centerSlot) % count + count) % count;
-
-                _bounceDuration = 0.15f;
-                _bounceHeight = 6f;
+                // Mode 1: Authentic Mechanical Pawl - Smooth deceleration ramp + recoil bounce on lock
+                _bounceDuration = 0.12f;
+                _bounceHeight = 4f;
             }
-            else // StepperMotor
+            else
             {
-                // Mode 2: Modern Physical Stepper Motor
-                _brakeDuration = 0.60f;
-                float estDist = _maxSpeed * 0.5f * _brakeDuration;
-                int targetStep = Mathf.CeilToInt((_distance + estDist) / spacing) + 2;
-                _targetDistance = targetStep * spacing;
-                _targetSlot = ((targetStep + _centerSlot) % count + count) % count;
-
-                float totalDist = _targetDistance - _distance;
-                _brakeDuration = Mathf.Max(0.1f, (2f * totalDist) / _maxSpeed);
-
-                _startDistance = _distance;
-                _timer = 0f;
-                _state = ReelState.Braking;
+                // Mode 2: Modern Physical Stepper Motor - Smooth deceleration ramp + crisp zero-bounce lock
+                _bounceDuration = 0f;
+                _bounceHeight = 0f;
             }
+
+            _state = ReelState.Braking;
         }
 
         /// <summary>
@@ -232,6 +233,8 @@ namespace SlotMachine.Reel
             ResolveCatalogAndRng(catalog, null);
 
             _distance = 0f;
+            _speed = 0f;
+            _lastTickDistance = 0f;
             _state = ReelState.Idle;
             _isStopping = false;
 
@@ -295,6 +298,8 @@ namespace SlotMachine.Reel
 
             _speed = Mathf.Lerp(0f, _maxSpeed, t * t);
             _distance += _speed * Time.deltaTime;
+
+            UpdateRatchetAudio(_speed);
             ApplyPositions();
 
             if (t >= 1f)
@@ -306,16 +311,11 @@ namespace SlotMachine.Reel
 
         private void UpdateSpinning()
         {
+            _speed = _maxSpeed;
             _distance += _maxSpeed * Time.deltaTime;
-            ApplyPositions();
 
-            // When in MechanicalPawl mode and Stop was called:
-            if (_isStopping && _distance >= _targetDistance)
-            {
-                _distance = _targetDistance;
-                _state = ReelState.Bouncing;
-                _timer = 0f;
-            }
+            UpdateRatchetAudio(_speed);
+            ApplyPositions();
         }
 
         private void UpdateBraking()
@@ -325,12 +325,27 @@ namespace SlotMachine.Reel
 
             float totalDist = _targetDistance - _startDistance;
             _distance = _startDistance + (totalDist * (1f - (1f - t) * (1f - t)));
+
+            // Instantaneous velocity drops smoothly from initial speed to 0
+            _speed = Mathf.Max(0f, (2f * totalDist / _brakeDuration) * (1f - t));
+
+            UpdateRatchetAudio(_speed);
             ApplyPositions();
 
             if (t >= 1f)
             {
                 _distance = _targetDistance;
-                FinishStop();
+                _speed = 0f;
+
+                if (_bounceDuration > 0f)
+                {
+                    _state = ReelState.Bouncing;
+                    _timer = 0f;
+                }
+                else
+                {
+                    FinishStop();
+                }
             }
         }
 
@@ -339,7 +354,7 @@ namespace SlotMachine.Reel
             _timer += Time.deltaTime;
             float tau = Mathf.Clamp01(_timer / _bounceDuration);
 
-            // Damped spring oscillation: 2 decaying micro-bounces
+            // Damped spring oscillation: decaying micro-bounce on pawl lock
             float bounce = _bounceHeight * (1f - tau) * (1f - tau) * Mathf.Sin(3f * Mathf.PI * tau);
             _distance = _targetDistance + bounce;
             ApplyPositions();
@@ -348,6 +363,23 @@ namespace SlotMachine.Reel
             {
                 _distance = _targetDistance;
                 FinishStop();
+            }
+        }
+
+        private void UpdateRatchetAudio(float currentSpeed)
+        {
+            // 2 ratchet teeth per symbol height (e.g. 80px / 2 = 40px per click)
+            float tickInterval = Mathf.Max(10f, ItemSpacing * 0.5f);
+            if (_distance - _lastTickDistance >= tickInterval)
+            {
+                _lastTickDistance += tickInterval;
+                if (_distance - _lastTickDistance > tickInterval)
+                {
+                    _lastTickDistance = _distance;
+                }
+
+                float speedRatio = _maxSpeed > 0f ? Mathf.Clamp01(currentSpeed / _maxSpeed) : 0f;
+                SlotMachine.Audio.AudioManager.Instance?.PlayRatchetTick(speedRatio);
             }
         }
 

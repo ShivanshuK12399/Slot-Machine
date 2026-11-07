@@ -97,8 +97,10 @@ namespace SlotMachine.Reel
             _rectTransform.anchoredPosition = pos;
         }
 
+        private Coroutine _pulseRoutine;
+
         /// <summary>
-        /// Applies highlight coloring for win line celebrations.
+        /// Applies highlight coloring and pulsating scale for win line celebrations.
         /// </summary>
         public void SetHighlight(bool highlight, Color highlightColor)
         {
@@ -108,6 +110,37 @@ namespace SlotMachine.Reel
             {
                 _symbolImage.color = highlight ? highlightColor : _initialColor;
             }
+
+            if (highlight)
+            {
+                if (_pulseRoutine == null && gameObject.activeInHierarchy)
+                {
+                    _pulseRoutine = StartCoroutine(PulseRoutine());
+                }
+            }
+            else
+            {
+                if (_pulseRoutine != null)
+                {
+                    StopCoroutine(_pulseRoutine);
+                    _pulseRoutine = null;
+                }
+                transform.localScale = _initialScale;
+            }
+        }
+
+        private System.Collections.IEnumerator PulseRoutine()
+        {
+            float elapsed = 0f;
+            while (_isHighlighted)
+            {
+                elapsed += Time.deltaTime * 6f;
+                float scale = 1f + (0.12f * (0.5f + 0.5f * Mathf.Sin(elapsed)));
+                transform.localScale = _initialScale * scale;
+                yield return null;
+            }
+            transform.localScale = _initialScale;
+            _pulseRoutine = null;
         }
 
         /// <summary>
@@ -132,6 +165,11 @@ namespace SlotMachine.Reel
         public void ResetVisualState()
         {
             _isHighlighted = false;
+            if (_pulseRoutine != null)
+            {
+                StopCoroutine(_pulseRoutine);
+                _pulseRoutine = null;
+            }
             transform.localScale = _initialScale;
 
             if (_symbolImage != null)

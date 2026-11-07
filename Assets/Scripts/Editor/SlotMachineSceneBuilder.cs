@@ -10,6 +10,7 @@ using SlotMachine.Config;
 using SlotMachine.Core;
 using SlotMachine.Reel;
 using SlotMachine.UI;
+using SlotMachine.Audio;
 
 namespace SlotMachine.Editor
 {
@@ -33,9 +34,27 @@ namespace SlotMachine.Editor
                 var scene = EditorSceneManager.GetActiveScene();
                 if (scene.isLoaded && scene.path == ScenePath)
                 {
-                    if (Object.FindFirstObjectByType<SlotMachineController>() == null)
+                    var canvas = Object.FindFirstObjectByType<Canvas>();
+                    var controller = Object.FindFirstObjectByType<SlotMachineController>();
+                    if (canvas != null && controller != null)
                     {
-                        BuildSceneUI();
+                        bool dirty = false;
+                        if (Object.FindFirstObjectByType<AudioManager>() == null)
+                        {
+                            EnsureAudioManager(canvas.transform);
+                            dirty = true;
+                        }
+                        if (Object.FindFirstObjectByType<WinCelebrationView>() == null)
+                        {
+                            CreateWinCelebrationModal(canvas.transform, controller);
+                            dirty = true;
+                        }
+                        if (dirty)
+                        {
+                            EditorSceneManager.MarkSceneDirty(scene);
+                            EditorSceneManager.SaveScene(scene);
+                            Debug.Log("[SlotMachine] Phase 5 AudioManager & WinCelebrationView successfully added to scene!");
+                        }
                     }
                 }
             };
@@ -118,6 +137,7 @@ namespace SlotMachine.Editor
             ctrlSO.FindProperty("_minBet").intValue = 5;
             ctrlSO.FindProperty("_maxBet").intValue = 100;
             ctrlSO.FindProperty("_betStep").intValue = 5;
+            ctrlSO.FindProperty("_winProbability").floatValue = 0.5f;
             ctrlSO.FindProperty("_winCelebrationDuration").floatValue = 1.5f;
             ctrlSO.ApplyModifiedProperties();
 
@@ -151,6 +171,10 @@ namespace SlotMachine.Editor
                 rgSO.FindProperty("_payoutTable").objectReferenceValue = payoutTable;
                 rgSO.ApplyModifiedProperties();
             }
+
+            // Phase 5: Audio Manager & Win Celebration Modal
+            EnsureAudioManager(canvas.transform);
+            CreateWinCelebrationModal(canvas.transform, controller);
 
             EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
             EditorSceneManager.SaveOpenScenes();
@@ -534,6 +558,120 @@ namespace SlotMachine.Editor
             }
 
             return null;
+        }
+
+        private static Sprite LoadSpriteSlice(string path, string sliceName)
+        {
+            var all = AssetDatabase.LoadAllAssetsAtPath(path);
+            for (int i = 0; i < all.Length; i++)
+            {
+                if (all[i] is Sprite s && s.name == sliceName) return s;
+            }
+            return LoadSpriteAtPath(path);
+        }
+
+        private static void EnsureAudioManager(Transform parent)
+        {
+            var existing = Object.FindFirstObjectByType<AudioManager>();
+            GameObject audioObj = existing != null ? existing.gameObject : null;
+            if (audioObj == null)
+            {
+                audioObj = new GameObject("AudioManager", typeof(AudioManager));
+                audioObj.transform.SetParent(parent, false);
+            }
+
+            var audioManager = audioObj.GetComponent<AudioManager>();
+            AudioClip scrollClip = AssetDatabase.LoadAssetAtPath<AudioClip>("Assets/Sounds/scrolling.wav");
+            if (scrollClip != null && audioManager != null)
+            {
+                SerializedObject audioSO = new SerializedObject(audioManager);
+                var prop = audioSO.FindProperty("_reelSpinLoopClip");
+                if (prop != null && prop.objectReferenceValue == null)
+                {
+                    prop.objectReferenceValue = scrollClip;
+                    audioSO.ApplyModifiedProperties();
+                }
+            }
+        }
+
+        private static void CreateWinCelebrationModal(Transform canvasTransform, SlotMachineController controller)
+        {
+            var existing = Object.FindFirstObjectByType<WinCelebrationView>();
+            if (existing != null) return;
+
+            GameObject modalObj = new GameObject("WinCelebrationModal", typeof(RectTransform), typeof(CanvasGroup), typeof(WinCelebrationView));
+            RectTransform modalRt = modalObj.GetComponent<RectTransform>();
+            modalRt.SetParent(canvasTransform, false);
+            modalRt.anchorMin = Vector2.zero;
+            modalRt.anchorMax = Vector2.one;
+            modalRt.sizeDelta = Vector2.zero;
+
+            // Semi-transparent backdrop blocker
+            Image backdrop = modalObj.AddComponent<Image>();
+            backdrop.color = new Color(0f, 0f, 0f, 0.65f);
+
+            // Dialog Frame
+            GameObject popupObj = new GameObject("PopupDialog", typeof(RectTransform), typeof(Image));
+            RectTransform popupRt = popupObj.GetComponent<RectTransform>();
+            popupRt.SetParent(modalRt, false);
+            popupRt.anchorMin = new Vector2(0.5f, 0.5f);
+            popupRt.anchorMax = new Vector2(0.5f, 0.5f);
+            popupRt.anchoredPosition = Vector2.zero;
+            popupRt.sizeDelta = new Vector2(500, 360);
+
+            Image popupImg = popupObj.GetComponent<Image>();
+            popupImg.sprite = LoadSpriteSlice("Assets/UI/popup.png", "popup_0");
+            popupImg.preserveAspect = true;
+
+            // Title Text
+            GameObject titleObj = new GameObject("TitleText", typeof(RectTransform), typeof(TextMeshProUGUI));
+            RectTransform titleRt = titleObj.GetComponent<RectTransform>();
+            titleRt.SetParent(popupRt, false);
+            titleRt.anchorMin = new Vector2(0.5f, 0.5f);
+            titleRt.anchorMax = new Vector2(0.5f, 0.5f);
+            titleRt.anchoredPosition = new Vector2(0, 80);
+            titleRt.sizeDelta = new Vector2(400, 50);
+
+            TextMeshProUGUI titleTmp = titleObj.GetComponent<TextMeshProUGUI>();
+            titleTmp.text = "BIG WIN!";
+            titleTmp.fontSize = 38;
+            titleTmp.fontStyle = FontStyles.Bold;
+            titleTmp.alignment = TextAlignmentOptions.Center;
+            titleTmp.color = new Color(1f, 0.85f, 0.2f, 1f);
+
+            // Payout Text
+            GameObject payoutObj = new GameObject("PayoutText", typeof(RectTransform), typeof(TextMeshProUGUI));
+            RectTransform payoutRt = payoutObj.GetComponent<RectTransform>();
+            payoutRt.SetParent(popupRt, false);
+            payoutRt.anchorMin = new Vector2(0.5f, 0.5f);
+            payoutRt.anchorMax = new Vector2(0.5f, 0.5f);
+            payoutRt.anchoredPosition = new Vector2(0, 10);
+            payoutRt.sizeDelta = new Vector2(400, 60);
+
+            TextMeshProUGUI payoutTmp = payoutObj.GetComponent<TextMeshProUGUI>();
+            payoutTmp.text = "+500";
+            payoutTmp.fontSize = 46;
+            payoutTmp.fontStyle = FontStyles.Bold;
+            payoutTmp.alignment = TextAlignmentOptions.Center;
+            payoutTmp.color = Color.white;
+
+            // Claim Button
+            Button claimBtn = CreateButton(popupRt, new Vector2(0, -90), new Vector2(160, 56), "Assets/UI/Yes_No_Btn.png", "CLAIM");
+
+            // Wire WinCelebrationView
+            WinCelebrationView celebView = modalObj.GetComponent<WinCelebrationView>();
+            SerializedObject celebSO = new SerializedObject(celebView);
+            celebSO.FindProperty("_controller").objectReferenceValue = controller;
+            celebSO.FindProperty("_popupRoot").objectReferenceValue = modalObj;
+            celebSO.FindProperty("_popupTransform").objectReferenceValue = popupRt;
+            celebSO.FindProperty("_canvasGroup").objectReferenceValue = modalObj.GetComponent<CanvasGroup>();
+            celebSO.FindProperty("_titleText").objectReferenceValue = titleTmp;
+            celebSO.FindProperty("_payoutText").objectReferenceValue = payoutTmp;
+            celebSO.FindProperty("_claimButton").objectReferenceValue = claimBtn;
+            celebSO.ApplyModifiedProperties();
+
+            // Modal remains active; CanvasGroup alpha and interactable handle visibility
+            modalObj.SetActive(true);
         }
     }
 }

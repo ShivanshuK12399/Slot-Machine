@@ -127,6 +127,7 @@ namespace SlotMachine.UI
             if (_controller == null || !_controller.CanSpin) return;
 
             SetPulledDown();
+            SlotMachine.Audio.AudioManager.Instance?.PlayLeverPull();
             _controller.Spin();
         }
 

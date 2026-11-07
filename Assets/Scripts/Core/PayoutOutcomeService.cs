@@ -55,10 +55,12 @@ namespace SlotMachine.Core
         }
 
         /// <summary>
-        /// Selects random stopping symbols for the given number of reels using the configured symbol pool.
+        /// Selects stopping symbols based on the target win probability (0.0 = 0% win, 1.0 = 100% win).
+        /// When a win occurs, all reels stop on the same randomly chosen symbol.
+        /// When a loss occurs, stopping symbols are chosen such that not all reels match.
         /// Fills the caller-provided array to ensure zero allocation.
         /// </summary>
-        public void GenerateRandomStops(SymbolType[] targetStops)
+        public void GenerateStops(SymbolType[] targetStops, float winProbability)
         {
             if (targetStops == null || targetStops.Length == 0) return;
 
@@ -66,11 +68,68 @@ namespace SlotMachine.Core
             int count = symbols.Count;
             if (count == 0) return;
 
-            for (int i = 0; i < targetStops.Length; i++)
+            bool isWin = _randomProvider.NextFloat() < winProbability;
+
+            if (isWin)
             {
-                int randomIndex = _randomProvider.Range(0, count);
-                targetStops[i] = symbols[randomIndex].SymbolType;
+                // Winning spin: all reels match
+                int winIndex = _randomProvider.Range(0, count);
+                SymbolType winSymbol = symbols[winIndex].SymbolType;
+
+                for (int i = 0; i < targetStops.Length; i++)
+                {
+                    targetStops[i] = winSymbol;
+                }
             }
+            else
+            {
+                // Losing spin: pick random symbols ensuring at least one reel differs
+                for (int i = 0; i < targetStops.Length; i++)
+                {
+                    int randomIndex = _randomProvider.Range(0, count);
+                    targetStops[i] = symbols[randomIndex].SymbolType;
+                }
+
+                // If randomly all symbols matched, alter the last reel to guarantee no match
+                if (targetStops.Length > 1 && count > 1)
+                {
+                    bool allMatch = true;
+                    for (int i = 1; i < targetStops.Length; i++)
+                    {
+                        if (targetStops[i] != targetStops[0])
+                        {
+                            allMatch = false;
+                            break;
+                        }
+                    }
+
+                    if (allMatch)
+                    {
+                        int firstIndex = 0;
+                        for (int i = 0; i < count; i++)
+                        {
+                            if (symbols[i].SymbolType == targetStops[0])
+                            {
+                                firstIndex = i;
+                                break;
+                            }
+                        }
+
+                        int offset = _randomProvider.Range(1, count);
+                        int diffIndex = (firstIndex + offset) % count;
+                        targetStops[targetStops.Length - 1] = symbols[diffIndex].SymbolType;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Selects random stopping symbols for the given number of reels using default 50% win probability.
+        /// Fills the caller-provided array to ensure zero allocation.
+        /// </summary>
+        public void GenerateRandomStops(SymbolType[] targetStops)
+        {
+            GenerateStops(targetStops, 0.5f);
         }
 
         /// <summary>
@@ -132,7 +191,7 @@ namespace SlotMachine.Core
                 // Fallback to base multiplier on SymbolData if no explicit rule is configured
                 int baseMultiplier = symbolData != null ? symbolData.BaseMultiplier : 10;
                 int totalPayout = currentBet * baseMultiplier;
-                string winMsg = $"JACKPOT! 3x {firstSymbol}";
+                string winMsg = baseMultiplier >= 50 ? "JACKPOT!" : baseMultiplier >= 20 ? "MEGA WIN!" : "BIG WIN!";
 
                 return new SpinOutcome(
                     isWin: true,

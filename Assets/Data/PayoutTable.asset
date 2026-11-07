@@ -21,17 +21,17 @@ MonoBehaviour:
   - Symbol: 0
     MatchCount: 3
     PayoutMultiplier: 5
-    WinDescription: 3x Symbol 1
+    WinDescription: BIG WIN!
   - Symbol: 1
     MatchCount: 3
     PayoutMultiplier: 10
-    WinDescription: 3x Symbol 2
+    WinDescription: SUPER WIN!
   - Symbol: 2
     MatchCount: 3
     PayoutMultiplier: 20
-    WinDescription: 3x Symbol 3
+    WinDescription: MEGA WIN!
   - Symbol: 3
     MatchCount: 3
     PayoutMultiplier: 50
-    WinDescription: JACKPOT! 3x Symbol 4
+    WinDescription: JACKPOT!
 

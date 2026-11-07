@@ -36,6 +36,11 @@ namespace SlotMachine.Core
         [Tooltip("Credit increment/decrement step when modifying bet.")]
         [SerializeField] private int _betStep = 5;
 
+        [Header("Win Probability")]
+        [Tooltip("Probability of landing a winning combination on any spin (0.0 = 0%, 1.0 = 100%).")]
+        [Range(0f, 1f)]
+        [SerializeField] private float _winProbability = 0.5f;
+
         [Header("Celebration Timings")]
         [Tooltip("Duration in seconds to display win line highlight before returning to Idle.")]
         [SerializeField] private float _winCelebrationDuration = 1.5f;
@@ -69,6 +74,11 @@ namespace SlotMachine.Core
         public int MinBet => _minBet;
         public int MaxBet => _maxBet;
         public int BetStep => _betStep;
+        public float WinProbability
+        {
+            get => _winProbability;
+            set => _winProbability = Mathf.Clamp01(value);
+        }
         public SpinOutcome LastOutcome => _lastOutcome;
 
         public bool CanSpin => _state == SlotMachineState.Idle &&
@@ -287,7 +297,7 @@ namespace SlotMachine.Core
             SetState(SlotMachineState.Spinning);
 
             // 2. Pre-calculate deterministic outcome via pure logic service
-            _outcomeService.GenerateRandomStops(_targetStops);
+            _outcomeService.GenerateStops(_targetStops, _winProbability);
             _lastOutcome = _outcomeService.EvaluateOutcome(_targetStops, _currentBet);
 
             // 3. Command physical/visual reels
@@ -327,10 +337,12 @@ namespace SlotMachine.Core
 
                 // Transition to celebration state
                 SetState(SlotMachineState.WinCelebration);
+
+                // If no UI view is subscribed to handle the celebration popup, fallback to internal timer
+                bool hasUiListener = OnWinCelebrationRequested != null;
                 OnWinCelebrationRequested?.Invoke(_lastOutcome);
 
-                // Start celebration timer if duration > 0
-                if (_winCelebrationDuration > 0f)
+                if (_winCelebrationDuration > 0f && !hasUiListener)
                 {
                     _celebrationTimer = 0f;
                     _isTimingCelebration = true;

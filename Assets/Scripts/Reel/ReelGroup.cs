@@ -258,6 +258,7 @@ namespace SlotMachine.Reel
         private void HandleReelStopped(int index, SlotReel reel)
         {
             _stoppedCount++;
+            SlotMachine.Audio.AudioManager.Instance?.PlayReelStop(index);
             OnReelStopped?.Invoke(index, reel);
 
             if (_stoppedCount >= _reels.Length)
