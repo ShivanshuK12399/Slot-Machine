@@ -22,18 +22,28 @@ namespace SlotMachine.Reel
         private Vector3 _initialScale = Vector3.one;
         private Color _initialColor = Color.white;
 
-        public RectTransform RectTransform => _rectTransform;
+        public RectTransform RectTransform
+        {
+            get
+            {
+                if (_rectTransform == null) _rectTransform = GetComponent<RectTransform>();
+                return _rectTransform;
+            }
+        }
         public SymbolData CurrentSymbolData => _symbolData;
         public SymbolType CurrentSymbolType => _symbolData != null ? _symbolData.SymbolType : SymbolType.Symbol1;
         public bool IsHighlighted => _isHighlighted;
 
         private void Awake()
         {
-            _rectTransform = GetComponent<RectTransform>();
+            if (_rectTransform == null)
+            {
+                _rectTransform = GetComponent<RectTransform>();
+            }
 
             if (_symbolImage == null)
             {
-                _symbolImage = GetComponentInChildren<Image>();
+                _symbolImage = GetComponentInChildren<Image>(true);
             }
 
             if (_symbolImage != null)
@@ -52,6 +62,11 @@ namespace SlotMachine.Reel
         {
             _symbolData = symbolData;
 
+            if (_symbolImage == null)
+            {
+                _symbolImage = GetComponentInChildren<Image>(true);
+            }
+
             if (_symbolImage == null) return;
 
             if (symbolData != null && symbolData.SymbolSprite != null)
@@ -63,6 +78,7 @@ namespace SlotMachine.Reel
             {
                 _symbolImage.sprite = null;
                 _symbolImage.enabled = false;
+                Debug.LogWarning($"[SlotSymbolItem:{gameObject.name}] SetSymbol disabled image because symbolData is {(symbolData == null ? "NULL" : "missing SymbolSprite")}.");
             }
         }
 
@@ -71,6 +87,11 @@ namespace SlotMachine.Reel
         /// </summary>
         public void SetAnchoredY(float y)
         {
+            if (_rectTransform == null)
+            {
+                _rectTransform = GetComponent<RectTransform>();
+            }
+
             Vector2 pos = _rectTransform.anchoredPosition;
             pos.y = y;
             _rectTransform.anchoredPosition = pos;

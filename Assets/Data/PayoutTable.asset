@@ -13,10 +13,10 @@ MonoBehaviour:
   m_Name: PayoutTable
   m_EditorClassIdentifier: SlotMachine.Config:PayoutTable
   _symbols:
-  - {fileID: 11400000, guid: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a0001, type: 3}
-  - {fileID: 11400000, guid: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a0002, type: 3}
-  - {fileID: 11400000, guid: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a0003, type: 3}
-  - {fileID: 11400000, guid: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a0004, type: 3}
+  - {fileID: 11400000, guid: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a0001, type: 2}
+  - {fileID: 11400000, guid: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a0002, type: 2}
+  - {fileID: 11400000, guid: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a0003, type: 2}
+  - {fileID: 11400000, guid: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a0004, type: 2}
   _rules:
   - Symbol: 0
     MatchCount: 3

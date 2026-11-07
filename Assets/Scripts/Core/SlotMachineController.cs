@@ -63,6 +63,7 @@ namespace SlotMachine.Core
 
         // Read-only state queries
         public SlotMachineState State => _state;
+        public PayoutTable PayoutTable => _payoutTable;
         public int Balance => _currentBalance;
         public int Bet => _currentBet;
         public int MinBet => _minBet;
@@ -81,27 +82,33 @@ namespace SlotMachine.Core
             InitializeDependencies();
             _currentBalance = _startingBalance;
             _currentBet = Mathf.Clamp(_defaultBet, _minBet, _maxBet);
-
-            enabled = false; // Disable update when idle
         }
 
         private void Start()
         {
+            SubscribeReelGroupEvents();
+
             // Initial event broadcast for listeners (UI HUD)
             OnBalanceChanged?.Invoke(_currentBalance);
             OnBetChanged?.Invoke(_currentBet);
             OnStateChanged?.Invoke(_state);
         }
 
-        private void OnEnable()
+        private void OnDestroy()
+        {
+            UnsubscribeReelGroupEvents();
+        }
+
+        public void SubscribeReelGroupEvents()
         {
             if (_reelGroup != null)
             {
+                _reelGroup.OnAllReelsStopped -= HandleAllReelsStopped;
                 _reelGroup.OnAllReelsStopped += HandleAllReelsStopped;
             }
         }
 
-        private void OnDisable()
+        public void UnsubscribeReelGroupEvents()
         {
             if (_reelGroup != null)
             {
@@ -115,6 +122,12 @@ namespace SlotMachine.Core
             {
                 _reelGroup = GetComponentInChildren<ReelGroup>();
             }
+            if (_reelGroup == null)
+            {
+                _reelGroup = FindFirstObjectByType<ReelGroup>();
+            }
+
+            SubscribeReelGroupEvents();
 
             int reelCount = _reelGroup != null ? _reelGroup.ReelCount : 3;
             if (_targetStops == null || _targetStops.Length != reelCount)
@@ -130,6 +143,11 @@ namespace SlotMachine.Core
             if (_payoutTable != null && _outcomeService == null)
             {
                 _outcomeService = new PayoutOutcomeService(_payoutTable, _randomProvider);
+            }
+
+            if (_reelGroup != null && _reelGroup.PayoutTable == null && _payoutTable != null)
+            {
+                _reelGroup.SetPayoutTable(_payoutTable);
             }
         }
 
@@ -255,8 +273,9 @@ namespace SlotMachine.Core
         }
 
         /// <summary>
-        /// Executes the core spin pipeline: deducts wager, calculates RNG outcome,
+        /// Executes the core spin pipeline: calculates RNG outcome,
         /// commands reels to spin, and transitions state machine.
+        /// Wager deduction and winnings are evaluated when all reels stop.
         /// </summary>
         public bool Spin()
         {
@@ -264,18 +283,14 @@ namespace SlotMachine.Core
 
             InitializeDependencies();
 
-            // 1. Deduct wager
-            _currentBalance -= _currentBet;
-            OnBalanceChanged?.Invoke(_currentBalance);
-
-            // 2. Transition state to Spinning
+            // 1. Transition state to Spinning (credits are updated upon reels stopping)
             SetState(SlotMachineState.Spinning);
 
-            // 3. Pre-calculate deterministic outcome via pure logic service
+            // 2. Pre-calculate deterministic outcome via pure logic service
             _outcomeService.GenerateRandomStops(_targetStops);
             _lastOutcome = _outcomeService.EvaluateOutcome(_targetStops, _currentBet);
 
-            // 4. Command physical/visual reels
+            // 3. Command physical/visual reels
             if (_reelGroup != null)
             {
                 _reelGroup.Spin(_targetStops, _randomProvider);
@@ -298,14 +313,15 @@ namespace SlotMachine.Core
 
         private void HandleAllReelsStopped()
         {
+            // Deduct wager and award winnings together when all reels stop
+            int netChange = _lastOutcome.PayoutAmount - _currentBet;
+            _currentBalance += netChange;
+            OnBalanceChanged?.Invoke(_currentBalance);
+
             SetState(SlotMachineState.EvaluatingWin);
 
             if (_lastOutcome.IsWin)
             {
-                // Award winnings to balance
-                _currentBalance += _lastOutcome.PayoutAmount;
-                OnBalanceChanged?.Invoke(_currentBalance);
-
                 // Highlight payline symbols
                 HighlightPaylineSymbols(true);
 
@@ -318,7 +334,6 @@ namespace SlotMachine.Core
                 {
                     _celebrationTimer = 0f;
                     _isTimingCelebration = true;
-                    enabled = true; // Enable Update for timer
                 }
             }
             else
@@ -337,8 +352,6 @@ namespace SlotMachine.Core
             if (_state != SlotMachineState.WinCelebration) return;
 
             _isTimingCelebration = false;
-            enabled = false;
-
             HighlightPaylineSymbols(false);
             SetState(SlotMachineState.Idle);
             OnSpinCompleted?.Invoke(_lastOutcome);
@@ -346,11 +359,7 @@ namespace SlotMachine.Core
 
         private void Update()
         {
-            if (!_isTimingCelebration)
-            {
-                enabled = false;
-                return;
-            }
+            if (!_isTimingCelebration) return;
 
             _celebrationTimer += Time.deltaTime;
             if (_celebrationTimer >= _winCelebrationDuration)

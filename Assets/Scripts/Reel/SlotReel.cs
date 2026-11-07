@@ -10,97 +10,128 @@ namespace SlotMachine.Reel
     /// </summary>
     public enum ReelState
     {
-        Idle = 0,
-        SpinUp = 1,
-        Cruising = 2,
-        Decelerating = 3
+        Idle,
+        SpinUp,
+        Spinning,
+        Braking,
+        Bouncing
     }
 
     /// <summary>
-    /// Drives vertical procedural motion, endless symbol recycling, and elastic bounce settling
-    /// for a single slot reel column inside a masked aperture.
-    /// Completely zero-GC in hot paths; Update loop disabled when idle.
+    /// Controls vertical scrolling, endless symbol recycling, and mechanical stopping
+    /// with authentic star-wheel pawl recoil physics.
     /// </summary>
     public class SlotReel : MonoBehaviour
     {
-        [Header("Reel Configuration")]
-        [Tooltip("Vertical spacing in pixels between consecutive symbol centers.")]
-        [SerializeField] private float _itemSpacing = 110f;
+        [Header("Reel Binding")]
+        [Tooltip("Parent ReelGroup coordinating all reels. Auto-discovered if null.")]
+        [SerializeField] private ReelGroup _group;
 
-        [Tooltip("Cruising speed of reel rotation in pixels per second.")]
-        [SerializeField] private float _cruisingSpeed = 1600f;
+        [Tooltip("Index of this reel column (0 = Left, 1 = Middle, 2 = Right).")]
+        [SerializeField] private int _reelIndex;
 
-        [Tooltip("Duration in seconds of the initial spin-up acceleration phase.")]
-        [SerializeField] private float _spinUpDuration = 0.2f;
+        [Header("Speed Settings")]
+        [Tooltip("Maximum cruising spin speed in pixels per second.")]
+        [SerializeField] private float _maxSpeed = 1400f;
 
-        [Tooltip("Minimum symbol steps traveled during anticipation deceleration before stopping.")]
-        [SerializeField] private int _minDecelSteps = 8;
+        // Auto-discovered symbol items
+        private SlotSymbolItem[] _items;
 
-        [Tooltip("Array of symbol item views belonging to this reel. If empty, auto-populated from children.")]
-        [SerializeField] private SlotSymbolItem[] _symbolItems;
-
-        [Tooltip("Optional PayoutTable used to resolve symbols if catalog is omitted.")]
-        [SerializeField] private PayoutTable _payoutTable;
-
-        // Hot-path state caches
-        private ReelState _state = ReelState.Idle;
+        // Reel geometry
         private float[] _baseY;
         private int[] _lastCycles;
         private float _totalSpan;
         private float _halfSpan;
-        private int _centerSlotIndex;
+        private int _centerSlot;
 
-        // Motion variables
-        private float _currentDistance;
-        private float _currentSpeed;
-        private float _spinTimer;
-        private float _decelTimer;
-        private float _decelDuration;
-        private float _decelStartDistance;
-        private float _decelTotalDistance;
+        // Runtime motion
+        private ReelState _state = ReelState.Idle;
+        private float _speed;
+        private float _distance;
+        private float _startDistance;
         private float _targetDistance;
+        private float _timer;
+        private float _brakeDuration;
+        private float _bounceDuration;
+        private float _bounceHeight;
 
-        // Stopping & RNG
+        // Target stop data
         private bool _isStopping;
-        private int _targetSlotIndex;
+        private int _targetSlot;
         private SymbolType _targetSymbol;
         private SymbolData[] _catalog;
-        private IRandomProvider _randomProvider;
+        private IRandomProvider _rng;
 
+        // Events
         public event Action<SlotReel> OnSpinStarted;
         public event Action<SlotReel> OnSpinStopped;
 
+        // Properties
         public ReelState State => _state;
         public bool IsSpinning => _state != ReelState.Idle;
-        public float ItemSpacing => _itemSpacing;
+        public int ReelIndex => _reelIndex;
+        public float MaxSpeed => _maxSpeed;
+        public float ItemSpacing => _group != null ? _group.ItemSpacing : 70f;
+        public float SpinUpDuration => _group != null ? _group.SpinUpDuration : 0.2f;
+        public PayoutTable PayoutTable => _group != null ? _group.PayoutTable : null;
+        public SlotSymbolItem[] SymbolItems => _items;
+
+        public void SetReelGroup(ReelGroup group)
+        {
+            _group = group;
+            _catalog = null;
+            ResolveCatalogAndRng(null, null);
+        }
+
+        public void SetReelIndex(int index)
+        {
+            _reelIndex = index;
+        }
 
         private void Awake()
         {
-            InitializeItemArray();
-            enabled = false; // Disable update polling when idle
+            if (_group == null)
+            {
+                _group = GetComponentInParent<ReelGroup>();
+            }
+
+            InitializeItems();
+            enabled = false;
         }
 
-        private void InitializeItemArray()
+        public void InitializeItemArray() => InitializeItems();
+
+        public void InitializeItems()
         {
-            if (_symbolItems == null || _symbolItems.Length == 0)
+            if (_items == null || _items.Length == 0)
             {
-                _symbolItems = GetComponentsInChildren<SlotSymbolItem>(true);
+                _items = GetComponentsInChildren<SlotSymbolItem>(true);
             }
 
-            int count = _symbolItems.Length;
+            int count = _items != null ? _items.Length : 0;
             if (count == 0) return;
 
-            _centerSlotIndex = count / 2;
-            _baseY = new float[count];
-            _lastCycles = new int[count];
-
-            for (int i = 0; i < count; i++)
+            _centerSlot = count / 2;
+            if (_baseY == null || _baseY.Length != count)
             {
-                _baseY[i] = (i - _centerSlotIndex) * _itemSpacing;
-                _symbolItems[i].SetAnchoredY(_baseY[i]);
+                _baseY = new float[count];
+            }
+            if (_lastCycles == null || _lastCycles.Length != count)
+            {
+                _lastCycles = new int[count];
             }
 
-            _totalSpan = count * _itemSpacing;
+            float spacing = ItemSpacing;
+            for (int i = 0; i < count; i++)
+            {
+                _baseY[i] = (i - _centerSlot) * spacing;
+                if (_items[i] != null)
+                {
+                    _items[i].SetAnchoredY(_baseY[i]);
+                }
+            }
+
+            _totalSpan = count * spacing;
             _halfSpan = _totalSpan * 0.5f;
 
             ResetCycles();
@@ -109,100 +140,121 @@ namespace SlotMachine.Reel
         private void ResetCycles()
         {
             if (_baseY == null) return;
-
             for (int i = 0; i < _baseY.Length; i++)
             {
-                _lastCycles[i] = Mathf.FloorToInt((_baseY[i] - _currentDistance + _halfSpan) / _totalSpan);
+                _lastCycles[i] = Mathf.FloorToInt((_baseY[i] - _distance + _halfSpan) / _totalSpan);
             }
         }
 
         /// <summary>
-        /// Initiates continuous procedural spinning on this reel.
+        /// Starts continuous spinning.
         /// </summary>
         public void Spin(SymbolData[] catalog = null, IRandomProvider rng = null)
         {
-            if (_symbolItems == null || _symbolItems.Length == 0)
+            if (_baseY == null || _baseY.Length != (_items != null ? _items.Length : 0))
             {
-                InitializeItemArray();
+                InitializeItems();
             }
 
             ResolveCatalogAndRng(catalog, rng);
 
-            // Reset visual highlights
-            for (int i = 0; i < _symbolItems.Length; i++)
+            for (int i = 0; i < _items.Length; i++)
             {
-                _symbolItems[i].ResetVisualState();
+                _items[i].ResetVisualState();
             }
 
-            _state = ReelState.SpinUp;
-            _spinTimer = 0f;
-            _currentSpeed = 0f;
+            _distance = 0f;
+            _speed = 0f;
+            _timer = 0f;
             _isStopping = false;
+            _state = ReelState.SpinUp;
 
             ResetCycles();
-            enabled = true; // Activate Update loop
+            enabled = true;
 
             OnSpinStarted?.Invoke(this);
         }
 
         /// <summary>
-        /// Commands this reel to begin deceleration and snap cleanly to the given target symbol.
+        /// Commands this reel to stop on the target symbol using the active physical stopping mode.
         /// </summary>
         public void Stop(SymbolType targetSymbol)
         {
-            if (_state == ReelState.Idle || _state == ReelState.Decelerating) return;
+            if (_state == ReelState.Idle || _state == ReelState.Braking || _state == ReelState.Bouncing) return;
 
             _targetSymbol = targetSymbol;
             _isStopping = true;
 
-            int count = _symbolItems.Length;
-            float currentStep = _currentDistance / _itemSpacing;
-            int targetStep = Mathf.CeilToInt(currentStep) + _minDecelSteps;
+            int count = _items.Length;
+            float spacing = Mathf.Max(1f, ItemSpacing);
+            ReelStopMode mode = _group != null ? _group.StopMode : ReelStopMode.MechanicalPawl;
 
-            _targetDistance = targetStep * _itemSpacing;
-            _decelStartDistance = _currentDistance;
-            _decelTotalDistance = _targetDistance - _decelStartDistance;
+            if (mode == ReelStopMode.MechanicalPawl)
+            {
+                // Mode 1: Authentic Mechanical Pawl
+                // Spins at full speed until the target step, then drops pawl with spring recoil bounce
+                float currentStep = _distance / spacing;
+                int targetStep = Mathf.CeilToInt(currentStep) + 5;
+                _targetDistance = targetStep * spacing;
+                _targetSlot = ((targetStep + _centerSlot) % count + count) % count;
 
-            // Determine which physical item index will land at y = 0
-            _targetSlotIndex = ((targetStep + _centerSlotIndex) % count + count) % count;
+                _bounceDuration = 0.15f;
+                _bounceHeight = 6f;
+            }
+            else // StepperMotor
+            {
+                // Mode 2: Modern Physical Stepper Motor
+                _brakeDuration = 0.60f;
+                float estDist = _maxSpeed * 0.5f * _brakeDuration;
+                int targetStep = Mathf.CeilToInt((_distance + estDist) / spacing) + 2;
+                _targetDistance = targetStep * spacing;
+                _targetSlot = ((targetStep + _centerSlot) % count + count) % count;
 
-            // Deceleration duration dynamically tailored to distance and speed
-            _decelDuration = Mathf.Max(0.45f, _decelTotalDistance / (_cruisingSpeed * 0.7f));
-            _decelTimer = 0f;
-            _state = ReelState.Decelerating;
+                float totalDist = _targetDistance - _distance;
+                _brakeDuration = Mathf.Max(0.1f, (2f * totalDist) / _maxSpeed);
+
+                _startDistance = _distance;
+                _timer = 0f;
+                _state = ReelState.Braking;
+            }
         }
 
         /// <summary>
-        /// Instantly snaps this reel to display the target symbol on the payline without animation.
+        /// Snaps instantly to display the symbol without spinning.
         /// </summary>
         public void SnapToSymbol(SymbolType symbol, SymbolData[] catalog = null)
         {
-            if (_symbolItems == null || _symbolItems.Length == 0)
+            if (_baseY == null || _baseY.Length != (_items != null ? _items.Length : 0))
             {
-                InitializeItemArray();
+                InitializeItems();
             }
 
             ResolveCatalogAndRng(catalog, null);
 
-            _currentDistance = 0f;
+            _distance = 0f;
             _state = ReelState.Idle;
             _isStopping = false;
 
-            int count = _symbolItems.Length;
+            int count = _items.Length;
             SymbolData targetData = GetSymbolData(symbol);
+            float spacing = ItemSpacing;
 
             for (int i = 0; i < count; i++)
             {
-                _symbolItems[i].SetAnchoredY(_baseY[i]);
-                if (i == _centerSlotIndex)
+                int offset = i - _centerSlot;
+                float y = offset * spacing;
+                _items[i].SetAnchoredY(y);
+                _baseY[i] = y;
+
+                if (i == _centerSlot)
                 {
-                    _symbolItems[i].SetSymbol(targetData);
+                    _items[i].SetSymbol(targetData);
                 }
                 else
                 {
-                    _symbolItems[i].SetSymbol(GetRandomSymbol());
+                    _items[i].SetSymbol(GetRandomSymbol());
                 }
-                _symbolItems[i].ResetVisualState();
+                _items[i].ResetVisualState();
             }
 
             ResetCycles();
@@ -217,12 +269,16 @@ namespace SlotMachine.Reel
                     UpdateSpinUp();
                     break;
 
-                case ReelState.Cruising:
-                    UpdateCruising();
+                case ReelState.Spinning:
+                    UpdateSpinning();
                     break;
 
-                case ReelState.Decelerating:
-                    UpdateDecelerating();
+                case ReelState.Braking:
+                    UpdateBraking();
+                    break;
+
+                case ReelState.Bouncing:
+                    UpdateBouncing();
                     break;
 
                 case ReelState.Idle:
@@ -234,67 +290,95 @@ namespace SlotMachine.Reel
 
         private void UpdateSpinUp()
         {
-            _spinTimer += Time.deltaTime;
-            float t = Mathf.Clamp01(_spinTimer / _spinUpDuration);
+            _timer += Time.deltaTime;
+            float t = Mathf.Clamp01(_timer / SpinUpDuration);
 
-            // Smooth quadratic acceleration
-            _currentSpeed = Mathf.Lerp(0f, _cruisingSpeed, t * t);
-            _currentDistance += _currentSpeed * Time.deltaTime;
-
-            ApplyItemPositionsAndRecycle();
+            _speed = Mathf.Lerp(0f, _maxSpeed, t * t);
+            _distance += _speed * Time.deltaTime;
+            ApplyPositions();
 
             if (t >= 1f)
             {
-                _currentSpeed = _cruisingSpeed;
-                _state = ReelState.Cruising;
+                _speed = _maxSpeed;
+                _state = ReelState.Spinning;
             }
         }
 
-        private void UpdateCruising()
+        private void UpdateSpinning()
         {
-            _currentDistance += _cruisingSpeed * Time.deltaTime;
-            ApplyItemPositionsAndRecycle();
+            _distance += _maxSpeed * Time.deltaTime;
+            ApplyPositions();
+
+            // When in MechanicalPawl mode and Stop was called:
+            if (_isStopping && _distance >= _targetDistance)
+            {
+                _distance = _targetDistance;
+                _state = ReelState.Bouncing;
+                _timer = 0f;
+            }
         }
 
-        private void UpdateDecelerating()
+        private void UpdateBraking()
         {
-            _decelTimer += Time.deltaTime;
-            float t = Mathf.Clamp01(_decelTimer / _decelDuration);
-            float ease = EaseOutBack(t);
+            _timer += Time.deltaTime;
+            float t = Mathf.Clamp01(_timer / _brakeDuration);
 
-            _currentDistance = _decelStartDistance + (_decelTotalDistance * ease);
-
-            ApplyItemPositionsAndRecycle();
+            float totalDist = _targetDistance - _startDistance;
+            _distance = _startDistance + (totalDist * (1f - (1f - t) * (1f - t)));
+            ApplyPositions();
 
             if (t >= 1f)
             {
+                _distance = _targetDistance;
                 FinishStop();
             }
         }
 
-        private void ApplyItemPositionsAndRecycle()
+        private void UpdateBouncing()
         {
-            int count = _symbolItems.Length;
+            _timer += Time.deltaTime;
+            float tau = Mathf.Clamp01(_timer / _bounceDuration);
+
+            // Damped spring oscillation: 2 decaying micro-bounces
+            float bounce = _bounceHeight * (1f - tau) * (1f - tau) * Mathf.Sin(3f * Mathf.PI * tau);
+            _distance = _targetDistance + bounce;
+            ApplyPositions();
+
+            if (tau >= 1f)
+            {
+                _distance = _targetDistance;
+                FinishStop();
+            }
+        }
+
+        private void ApplyPositions()
+        {
+            int count = _items.Length;
 
             for (int i = 0; i < count; i++)
             {
-                float y = Mathf.Repeat(_baseY[i] - _currentDistance + _halfSpan, _totalSpan) - _halfSpan;
-                _symbolItems[i].SetAnchoredY(y);
+                float y = Mathf.Repeat(_baseY[i] - _distance + _halfSpan, _totalSpan) - _halfSpan;
+                _items[i].SetAnchoredY(y);
 
-                // Detect when item wraps from bottom to top
-                int cycle = Mathf.FloorToInt((_baseY[i] - _currentDistance + _halfSpan) / _totalSpan);
+                // Detect when item wraps bottom-to-top
+                int cycle = Mathf.FloorToInt((_baseY[i] - _distance + _halfSpan) / _totalSpan);
                 if (cycle != _lastCycles[i])
                 {
                     _lastCycles[i] = cycle;
 
-                    // Assign target symbol if this item is the designated landing slot
-                    if (_isStopping && i == _targetSlotIndex)
+                    SymbolData sym;
+                    if (_isStopping && i == _targetSlot)
                     {
-                        _symbolItems[i].SetSymbol(GetSymbolData(_targetSymbol));
+                        sym = GetSymbolData(_targetSymbol);
                     }
                     else
                     {
-                        _symbolItems[i].SetSymbol(GetRandomSymbol());
+                        sym = GetRandomSymbol();
+                    }
+
+                    if (sym != null)
+                    {
+                        _items[i].SetSymbol(sym);
                     }
                 }
             }
@@ -302,64 +386,63 @@ namespace SlotMachine.Reel
 
         private void FinishStop()
         {
-            _currentDistance = _targetDistance;
-
-            int count = _symbolItems.Length;
+            int count = _items.Length;
+            float spacing = ItemSpacing;
             SymbolData targetData = GetSymbolData(_targetSymbol);
 
-            // Strictly enforce exact grid alignment and center symbol
             for (int i = 0; i < count; i++)
             {
-                int relativeOffset = (i - _targetSlotIndex + count) % count;
-                if (relativeOffset > count / 2) relativeOffset -= count;
+                int offset = (i - _targetSlot + count) % count;
+                if (offset > count / 2) offset -= count;
 
-                float finalY = relativeOffset * _itemSpacing;
-                _symbolItems[i].SetAnchoredY(finalY);
+                float y = offset * spacing;
+                _items[i].SetAnchoredY(y);
+                _baseY[i] = y;
 
-                if (i == _targetSlotIndex)
+                if (i == _targetSlot)
                 {
-                    _symbolItems[i].SetSymbol(targetData);
+                    _items[i].SetSymbol(targetData);
+                }
+                else if (_items[i].CurrentSymbolData == null)
+                {
+                    _items[i].SetSymbol(GetRandomSymbol());
                 }
             }
 
+            _centerSlot = _targetSlot;
+            _distance = 0f;
             _state = ReelState.Idle;
             _isStopping = false;
             ResetCycles();
-            enabled = false; // Turn off Update loop
+            enabled = false;
 
             OnSpinStopped?.Invoke(this);
         }
 
-        /// <summary>
-        /// Returns the item currently positioned directly on the center payline.
-        /// </summary>
         public SlotSymbolItem GetPaylineItem()
         {
-            if (_symbolItems == null || _symbolItems.Length == 0) return null;
+            if (_items == null || _items.Length == 0) return null;
 
-            int closestIndex = 0;
+            int best = 0;
             float minAbsY = float.MaxValue;
 
-            for (int i = 0; i < _symbolItems.Length; i++)
+            for (int i = 0; i < _items.Length; i++)
             {
-                float absY = Mathf.Abs(_symbolItems[i].RectTransform.anchoredPosition.y);
+                float absY = Mathf.Abs(_items[i].RectTransform.anchoredPosition.y);
                 if (absY < minAbsY)
                 {
                     minAbsY = absY;
-                    closestIndex = i;
+                    best = i;
                 }
             }
 
-            return _symbolItems[closestIndex];
+            return _items[best];
         }
 
-        /// <summary>
-        /// Returns the symbol type currently visible on the center payline.
-        /// </summary>
         public SymbolType GetPaylineSymbolType()
         {
-            SlotSymbolItem paylineItem = GetPaylineItem();
-            return paylineItem != null ? paylineItem.CurrentSymbolType : SymbolType.Symbol1;
+            SlotSymbolItem item = GetPaylineItem();
+            return item != null ? item.CurrentSymbolType : SymbolType.Symbol1;
         }
 
         private void ResolveCatalogAndRng(SymbolData[] catalog, IRandomProvider rng)
@@ -368,27 +451,31 @@ namespace SlotMachine.Reel
             {
                 _catalog = catalog;
             }
-            else if (_payoutTable != null && _payoutTable.Symbols != null && _payoutTable.Symbols.Count > 0)
+
+            if (_catalog == null || _catalog.Length == 0)
             {
-                var tableSymbols = _payoutTable.Symbols;
-                if (_catalog == null || _catalog.Length != tableSymbols.Count)
+                var table = PayoutTable;
+                if (table == null)
                 {
-                    _catalog = new SymbolData[tableSymbols.Count];
+                    var controller = FindFirstObjectByType<SlotMachineController>();
+                    if (controller != null)
+                    {
+                        table = controller.PayoutTable;
+                    }
                 }
-                for (int i = 0; i < tableSymbols.Count; i++)
+
+                if (table != null && table.Symbols != null && table.Symbols.Count > 0)
                 {
-                    _catalog[i] = tableSymbols[i];
+                    var list = table.Symbols;
+                    _catalog = new SymbolData[list.Count];
+                    for (int i = 0; i < list.Count; i++)
+                    {
+                        _catalog[i] = list[i];
+                    }
                 }
             }
 
-            if (rng != null)
-            {
-                _randomProvider = rng;
-            }
-            else if (_randomProvider == null)
-            {
-                _randomProvider = new UnityRngProvider();
-            }
+            _rng = rng ?? _rng ?? new UnityRngProvider();
         }
 
         private SymbolData GetSymbolData(SymbolType type)
@@ -404,9 +491,10 @@ namespace SlotMachine.Reel
                 }
             }
 
-            if (_payoutTable != null)
+            var table = PayoutTable;
+            if (table != null)
             {
-                return _payoutTable.GetSymbolData(type);
+                return table.GetSymbolData(type);
             }
 
             return null;
@@ -415,20 +503,8 @@ namespace SlotMachine.Reel
         private SymbolData GetRandomSymbol()
         {
             if (_catalog == null || _catalog.Length == 0) return null;
-            int randomIndex = _randomProvider.Range(0, _catalog.Length);
+            int randomIndex = _rng.Range(0, _catalog.Length);
             return _catalog[randomIndex];
-        }
-
-        /// <summary>
-        /// Standard EaseOutBack easing function providing natural elastic overshoot and settle.
-        /// </summary>
-        private static float EaseOutBack(float t)
-        {
-            const float c1 = 1.70158f;
-            const float c3 = c1 + 1f; // 2.70158f
-            float tMinus1 = t - 1f;
-            return 1f + (c3 * tMinus1 * tMinus1 * tMinus1) + (c1 * tMinus1 * tMinus1);
         }
     }
 }
-
