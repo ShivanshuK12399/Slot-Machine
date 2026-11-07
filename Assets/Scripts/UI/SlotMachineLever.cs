@@ -95,7 +95,16 @@ namespace SlotMachine.UI
 
         public void OnPointerDown(PointerEventData eventData)
         {
-            if (_controller == null || !_controller.CanSpin) return;
+            if (_controller == null) return;
+
+            if (!_controller.CanSpin)
+            {
+                if (_controller.State == SlotMachineState.Idle && _controller.Balance < _controller.Bet && !_controller.IsInFreeSpins)
+                {
+                    _controller.NotifyInsufficientCredits();
+                }
+                return;
+            }
 
             _isDragging = true;
             _dragStartPosition = eventData.position;

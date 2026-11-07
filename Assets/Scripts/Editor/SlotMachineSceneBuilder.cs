@@ -139,6 +139,10 @@ namespace SlotMachine.Editor
             ctrlSO.FindProperty("_betStep").intValue = 5;
             ctrlSO.FindProperty("_winProbability").floatValue = 0.5f;
             ctrlSO.FindProperty("_winCelebrationDuration").floatValue = 1.5f;
+            var bonusSpinsProp = ctrlSO.FindProperty("_bonusFreeSpinsCount");
+            if (bonusSpinsProp != null) bonusSpinsProp.intValue = 5;
+            var multProp = ctrlSO.FindProperty("_freeSpinsMultiplier");
+            if (multProp != null) multProp.intValue = 2;
             ctrlSO.ApplyModifiedProperties();
 
             // Wire View fields via SerializedObject

@@ -16,5 +16,5 @@ MonoBehaviour:
   _displayName: Symbol 4
   _symbolSprite: {fileID: -4945717182177459964, guid: 2693029000ce0134c94c5afd5344765a, type: 3}
   _baseMultiplier: 50
-  _isBonusSymbol: 0
+  _isBonusSymbol: 1
 

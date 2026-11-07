@@ -56,8 +56,8 @@ namespace SlotMachine.Core
 
         /// <summary>
         /// Selects stopping symbols based on the target win probability (0.0 = 0% win, 1.0 = 100% win).
-        /// When a win occurs, all reels stop on the same randomly chosen symbol.
-        /// When a loss occurs, stopping symbols are chosen such that not all reels match.
+        /// When a win occurs, reels either match all 3 symbols or form a Wild substitution win.
+        /// When a loss occurs, stopping symbols are chosen such that no win or wild win is possible.
         /// Fills the caller-provided array to ensure zero allocation.
         /// </summary>
         public void GenerateStops(SymbolType[] targetStops, float winProbability)
@@ -72,53 +72,77 @@ namespace SlotMachine.Core
 
             if (isWin)
             {
-                // Winning spin: all reels match
-                int winIndex = _randomProvider.Range(0, count);
-                SymbolType winSymbol = symbols[winIndex].SymbolType;
-
-                for (int i = 0; i < targetStops.Length; i++)
+                // Find bonus/wild symbol if any
+                int wildIndex = -1;
+                for (int i = 0; i < count; i++)
                 {
-                    targetStops[i] = winSymbol;
+                    if (symbols[i].IsBonusSymbol)
+                    {
+                        wildIndex = i;
+                        break;
+                    }
+                }
+
+                // 20% of wins are Wild Substitutions if wild exists and reel count >= 3
+                bool doWildWin = wildIndex >= 0 && targetStops.Length >= 3 && _randomProvider.NextFloat() < 0.20f;
+
+                if (doWildWin)
+                {
+                    // Pick a non-wild symbol for 2 reels, wild for 1 reel
+                    int regIndex = _randomProvider.Range(0, count);
+                    while (regIndex == wildIndex && count > 1)
+                    {
+                        regIndex = _randomProvider.Range(0, count);
+                    }
+
+                    SymbolType regSym = symbols[regIndex].SymbolType;
+                    SymbolType wildSym = symbols[wildIndex].SymbolType;
+
+                    int wildSlot = _randomProvider.Range(0, targetStops.Length);
+                    for (int i = 0; i < targetStops.Length; i++)
+                    {
+                        targetStops[i] = (i == wildSlot) ? wildSym : regSym;
+                    }
+                }
+                else
+                {
+                    // Winning spin: all reels match
+                    int winIndex = _randomProvider.Range(0, count);
+                    SymbolType winSymbol = symbols[winIndex].SymbolType;
+
+                    for (int i = 0; i < targetStops.Length; i++)
+                    {
+                        targetStops[i] = winSymbol;
+                    }
                 }
             }
             else
             {
-                // Losing spin: pick random symbols ensuring at least one reel differs
+                // Losing spin: pick random symbols ensuring no win
                 for (int i = 0; i < targetStops.Length; i++)
                 {
                     int randomIndex = _randomProvider.Range(0, count);
                     targetStops[i] = symbols[randomIndex].SymbolType;
                 }
 
-                // If randomly all symbols matched, alter the last reel to guarantee no match
-                if (targetStops.Length > 1 && count > 1)
+                // If evaluated as a win, force a guaranteed non-win pattern [A, B, A]
+                SpinOutcome testOutcome = EvaluateOutcome(targetStops, 10);
+                if (testOutcome.IsWin && targetStops.Length >= 3 && count >= 2)
                 {
-                    bool allMatch = true;
-                    for (int i = 1; i < targetStops.Length; i++)
+                    int s0 = 0;
+                    int s1 = 1;
+                    for (int i = 0; i < count; i++)
                     {
-                        if (targetStops[i] != targetStops[0])
-                        {
-                            allMatch = false;
-                            break;
-                        }
+                        if (!symbols[i].IsBonusSymbol) { s0 = i; break; }
+                    }
+                    for (int i = 0; i < count; i++)
+                    {
+                        if (!symbols[i].IsBonusSymbol && i != s0) { s1 = i; break; }
                     }
 
-                    if (allMatch)
-                    {
-                        int firstIndex = 0;
-                        for (int i = 0; i < count; i++)
-                        {
-                            if (symbols[i].SymbolType == targetStops[0])
-                            {
-                                firstIndex = i;
-                                break;
-                            }
-                        }
-
-                        int offset = _randomProvider.Range(1, count);
-                        int diffIndex = (firstIndex + offset) % count;
-                        targetStops[targetStops.Length - 1] = symbols[diffIndex].SymbolType;
-                    }
+                    targetStops[0] = symbols[s0].SymbolType;
+                    targetStops[1] = symbols[s1].SymbolType;
+                    targetStops[2] = symbols[s0].SymbolType;
                 }
             }
         }
@@ -168,6 +192,7 @@ namespace SlotMachine.Core
             if (allMatch)
             {
                 var symbolData = _payoutTable.GetSymbolData(firstSymbol);
+                bool isBonus = symbolData != null && symbolData.IsBonusSymbol;
 
                 // Look for explicit full-match rule
                 for (int i = 0; i < rulesCount; i++)
@@ -178,7 +203,7 @@ namespace SlotMachine.Core
                         int payout = currentBet * rule.PayoutMultiplier;
                         return new SpinOutcome(
                             isWin: true,
-                            isBonus: false,
+                            isBonus: isBonus,
                             payoutAmount: payout,
                             multiplier: rule.PayoutMultiplier,
                             winningSymbol: firstSymbol,
@@ -191,11 +216,11 @@ namespace SlotMachine.Core
                 // Fallback to base multiplier on SymbolData if no explicit rule is configured
                 int baseMultiplier = symbolData != null ? symbolData.BaseMultiplier : 10;
                 int totalPayout = currentBet * baseMultiplier;
-                string winMsg = baseMultiplier >= 50 ? "JACKPOT!" : baseMultiplier >= 20 ? "MEGA WIN!" : "BIG WIN!";
+                string winMsg = isBonus ? "JACKPOT!" : baseMultiplier >= 50 ? "JACKPOT!" : baseMultiplier >= 20 ? "MEGA WIN!" : "BIG WIN!";
 
                 return new SpinOutcome(
                     isWin: true,
-                    isBonus: false,
+                    isBonus: isBonus,
                     payoutAmount: totalPayout,
                     multiplier: baseMultiplier,
                     winningSymbol: firstSymbol,
@@ -204,7 +229,62 @@ namespace SlotMachine.Core
                 );
             }
 
-            // If not all slots match, it's a loss according to docs.txt (Player wins when all slots have the same symbol)
+            // 2. Wild Substitution Check (Bonus symbol acts as Wild for the other matching symbols)
+            if (stops.Length >= 3)
+            {
+                SymbolType wildType = SymbolType.Symbol4;
+                bool wildConfigured = false;
+                var symbolsList = _payoutTable.Symbols;
+                for (int i = 0; i < symbolsList.Count; i++)
+                {
+                    if (symbolsList[i].IsBonusSymbol)
+                    {
+                        wildType = symbolsList[i].SymbolType;
+                        wildConfigured = true;
+                        break;
+                    }
+                }
+
+                if (wildConfigured)
+                {
+                    SymbolType matchedSym = SymbolType.Symbol1;
+                    bool hasWildMatch = false;
+
+                    if (stops[0] == stops[1] && stops[2] == wildType && stops[0] != wildType)
+                    {
+                        matchedSym = stops[0];
+                        hasWildMatch = true;
+                    }
+                    else if (stops[0] == stops[2] && stops[1] == wildType && stops[0] != wildType)
+                    {
+                        matchedSym = stops[0];
+                        hasWildMatch = true;
+                    }
+                    else if (stops[1] == stops[2] && stops[0] == wildType && stops[1] != wildType)
+                    {
+                        matchedSym = stops[1];
+                        hasWildMatch = true;
+                    }
+
+                    if (hasWildMatch)
+                    {
+                        var symData = _payoutTable.GetSymbolData(matchedSym);
+                        int mult = symData != null ? symData.BaseMultiplier : 10;
+                        int payout = currentBet * mult;
+                        return new SpinOutcome(
+                            isWin: true,
+                            isBonus: true,
+                            payoutAmount: payout,
+                            multiplier: mult,
+                            winningSymbol: matchedSym,
+                            matchCount: stops.Length,
+                            message: "WILD WIN!"
+                        );
+                    }
+                }
+            }
+
+            // If not all slots match and no wild completion, it's a loss
             return SpinOutcome.NoWin();
         }
     }

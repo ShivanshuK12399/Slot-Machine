@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using SlotMachine.Config;
 using SlotMachine.Reel;
 
@@ -45,12 +46,21 @@ namespace SlotMachine.Core
         [Tooltip("Duration in seconds to display win line highlight before returning to Idle.")]
         [SerializeField] private float _winCelebrationDuration = 1.5f;
 
+        [Header("Bonus Features")]
+        [Tooltip("Number of free spins awarded when landing a bonus outcome.")]
+        [SerializeField] private int _bonusFreeSpinsCount = 5;
+
+        [Tooltip("Multiplier applied to all winnings during Free Spins.")]
+        [SerializeField] private int _freeSpinsMultiplier = 2;
+
         // Runtime state
         private SlotMachineState _state = SlotMachineState.Idle;
         private int _currentBalance;
         private int _currentBet;
         private float _celebrationTimer;
         private bool _isTimingCelebration;
+        private int _freeSpinsRemaining;
+        private bool _isCurrentSpinFree;
 
         // Pure calculation service & buffers
         private PayoutOutcomeService _outcomeService;
@@ -62,6 +72,9 @@ namespace SlotMachine.Core
         public event Action<SlotMachineState> OnStateChanged;
         public event Action<int> OnBalanceChanged;
         public event Action<int> OnBetChanged;
+        public event Action<int> OnFreeSpinsChanged;
+        public event Action OnInsufficientCredits;
+        public event Action OnCreditsEmpty;
         public event Action<SpinOutcome> OnSpinStarted;
         public event Action<SpinOutcome> OnSpinCompleted;
         public event Action<SpinOutcome> OnWinCelebrationRequested;
@@ -74,6 +87,9 @@ namespace SlotMachine.Core
         public int MinBet => _minBet;
         public int MaxBet => _maxBet;
         public int BetStep => _betStep;
+        public int FreeSpinsRemaining => _freeSpinsRemaining;
+        public bool IsInFreeSpins => _freeSpinsRemaining > 0;
+        public int FreeSpinsMultiplier => _freeSpinsMultiplier;
         public float WinProbability
         {
             get => _winProbability;
@@ -82,10 +98,9 @@ namespace SlotMachine.Core
         public SpinOutcome LastOutcome => _lastOutcome;
 
         public bool CanSpin => _state == SlotMachineState.Idle &&
-                               _currentBalance >= _currentBet &&
-                               _currentBet > 0;
+                               (_freeSpinsRemaining > 0 || (_currentBalance >= _currentBet && _currentBet > 0));
 
-        public bool CanChangeBet => _state == SlotMachineState.Idle;
+        public bool CanChangeBet => _state == SlotMachineState.Idle && _freeSpinsRemaining <= 0;
 
         private void Awake()
         {
@@ -102,6 +117,7 @@ namespace SlotMachine.Core
             OnBalanceChanged?.Invoke(_currentBalance);
             OnBetChanged?.Invoke(_currentBet);
             OnStateChanged?.Invoke(_state);
+            CheckCreditConditions();
         }
 
         private void OnDestroy()
@@ -204,6 +220,7 @@ namespace SlotMachine.Core
             {
                 _currentBet = targetBet;
                 OnBetChanged?.Invoke(_currentBet);
+                CheckCreditConditions();
                 return true;
             }
 
@@ -227,6 +244,7 @@ namespace SlotMachine.Core
             {
                 _currentBet = targetBet;
                 OnBetChanged?.Invoke(_currentBet);
+                CheckCreditConditions();
                 return true;
             }
 
@@ -289,12 +307,27 @@ namespace SlotMachine.Core
         /// </summary>
         public bool Spin()
         {
-            if (!CanSpin) return false;
+            if (!CanSpin)
+            {
+                if (_state == SlotMachineState.Idle && _currentBalance < _currentBet && _freeSpinsRemaining <= 0)
+                {
+                    NotifyInsufficientCredits();
+                }
+                return false;
+            }
 
             InitializeDependencies();
 
             // 1. Transition state to Spinning (credits are updated upon reels stopping)
             SetState(SlotMachineState.Spinning);
+
+            // Handle Free Spins debiting
+            _isCurrentSpinFree = _freeSpinsRemaining > 0;
+            if (_isCurrentSpinFree)
+            {
+                _freeSpinsRemaining--;
+                OnFreeSpinsChanged?.Invoke(_freeSpinsRemaining);
+            }
 
             // 2. Pre-calculate deterministic outcome via pure logic service
             _outcomeService.GenerateStops(_targetStops, _winProbability);
@@ -323,10 +356,24 @@ namespace SlotMachine.Core
 
         private void HandleAllReelsStopped()
         {
-            // Deduct wager and award winnings together when all reels stop
-            int netChange = _lastOutcome.PayoutAmount - _currentBet;
+            // Free spins have zero wager cost; winnings during free spins are multiplied!
+            int wager = _isCurrentSpinFree ? 0 : _currentBet;
+            int winAmount = _lastOutcome.PayoutAmount;
+            if (_isCurrentSpinFree && winAmount > 0)
+            {
+                winAmount *= _freeSpinsMultiplier;
+            }
+
+            int netChange = winAmount - wager;
             _currentBalance += netChange;
             OnBalanceChanged?.Invoke(_currentBalance);
+
+            // Award free spins if a bonus outcome landed
+            if (_lastOutcome.IsBonus)
+            {
+                _freeSpinsRemaining += _bonusFreeSpinsCount;
+                OnFreeSpinsChanged?.Invoke(_freeSpinsRemaining);
+            }
 
             SetState(SlotMachineState.EvaluatingWin);
 
@@ -353,6 +400,7 @@ namespace SlotMachine.Core
                 // No win, return directly to Idle
                 SetState(SlotMachineState.Idle);
                 OnSpinCompleted?.Invoke(_lastOutcome);
+                CheckCreditConditions();
             }
         }
 
@@ -367,6 +415,50 @@ namespace SlotMachine.Core
             HighlightPaylineSymbols(false);
             SetState(SlotMachineState.Idle);
             OnSpinCompleted?.Invoke(_lastOutcome);
+            CheckCreditConditions();
+        }
+
+        /// <summary>
+        /// Broadcasts an insufficient credits event when balance is less than current bet.
+        /// </summary>
+        public void NotifyInsufficientCredits()
+        {
+            OnInsufficientCredits?.Invoke();
+        }
+
+        /// <summary>
+        /// Evaluates balance conditions in Idle state: triggers restart countdown if empty,
+        /// or alerts insufficient credits if balance < bet.
+        /// </summary>
+        public void CheckCreditConditions()
+        {
+            if (_state != SlotMachineState.Idle) return;
+            if (_freeSpinsRemaining > 0) return;
+
+            if (_currentBalance <= 0)
+            {
+                SetState(SlotMachineState.GameOver);
+                OnCreditsEmpty?.Invoke();
+                StartCoroutine(RestartLevelRoutine());
+            }
+            else if (_currentBalance < _currentBet)
+            {
+                OnInsufficientCredits?.Invoke();
+            }
+        }
+
+        private System.Collections.IEnumerator RestartLevelRoutine()
+        {
+            yield return new WaitForSeconds(3.0f);
+            var activeScene = SceneManager.GetActiveScene();
+            if (activeScene.buildIndex >= 0)
+            {
+                SceneManager.LoadScene(activeScene.buildIndex);
+            }
+            else
+            {
+                SceneManager.LoadScene(activeScene.name);
+            }
         }
 
         private void Update()

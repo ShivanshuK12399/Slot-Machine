@@ -24,7 +24,12 @@ namespace SlotMachine.Core
         /// <summary>
         /// A winning combination or jackpot is being celebrated and highlighted on the payline.
         /// </summary>
-        WinCelebration = 3
+        WinCelebration = 3,
+
+        /// <summary>
+        /// Player ran out of credits. Game is locked and level will restart.
+        /// </summary>
+        GameOver = 4
     }
 }
 

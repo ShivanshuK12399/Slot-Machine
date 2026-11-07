@@ -58,6 +58,10 @@ namespace SlotMachine.UI
         [SerializeField] private string _idlePromptMessage = "PULL LEVER TO PLAY";
         [SerializeField] private string _spinningMessage = "GOOD LUCK!";
 
+        [Header("Insufficient & Empty Credits Messages")]
+        [SerializeField] private string _insufficientCreditsMessage = "INSUFFICIENT CREDITS! LOWER BET";
+        [SerializeField] private string _creditsEmptyMessage = "OUT OF CREDITS! RESTARTING...";
+
         [Header("Rolling Count-Up Settings")]
         [SerializeField] private float _countUpDuration = 0.8f;
 
@@ -125,6 +129,9 @@ namespace SlotMachine.UI
             _controller.OnStateChanged += HandleStateChanged;
             _controller.OnBalanceChanged += HandleBalanceChanged;
             _controller.OnBetChanged += HandleBetChanged;
+            _controller.OnFreeSpinsChanged += HandleFreeSpinsChanged;
+            _controller.OnInsufficientCredits += HandleInsufficientCredits;
+            _controller.OnCreditsEmpty += HandleCreditsEmpty;
             _controller.OnSpinStarted += HandleSpinStarted;
             _controller.OnSpinCompleted += HandleSpinCompleted;
             _controller.OnWinCelebrationRequested += HandleWinCelebration;
@@ -137,6 +144,9 @@ namespace SlotMachine.UI
             _controller.OnStateChanged -= HandleStateChanged;
             _controller.OnBalanceChanged -= HandleBalanceChanged;
             _controller.OnBetChanged -= HandleBetChanged;
+            _controller.OnFreeSpinsChanged -= HandleFreeSpinsChanged;
+            _controller.OnInsufficientCredits -= HandleInsufficientCredits;
+            _controller.OnCreditsEmpty -= HandleCreditsEmpty;
             _controller.OnSpinStarted -= HandleSpinStarted;
             _controller.OnSpinCompleted -= HandleSpinCompleted;
             _controller.OnWinCelebrationRequested -= HandleWinCelebration;
@@ -202,6 +212,14 @@ namespace SlotMachine.UI
 
             if (_controller.State == SlotMachineState.Idle)
             {
+                if (!_controller.CanSpin)
+                {
+                    if (_controller.Balance < _controller.Bet && !_controller.IsInFreeSpins)
+                    {
+                        SetStatusText(_insufficientCreditsMessage);
+                    }
+                    return;
+                }
                 _controller.Spin();
             }
             else if (_controller.State == SlotMachineState.WinCelebration)
@@ -237,6 +255,42 @@ namespace SlotMachine.UI
             }
         }
 
+        private void HandleInsufficientCredits()
+        {
+            SetStatusText(_insufficientCreditsMessage);
+            SetLeverState(false, false);
+            UpdateButtonStates(_controller != null ? _controller.State : SlotMachineState.Idle);
+        }
+
+        private void HandleCreditsEmpty()
+        {
+            SetStatusText(_creditsEmptyMessage);
+            SetLeverState(false, false);
+            UpdateButtonStates(SlotMachineState.GameOver);
+        }
+
+        private void UpdateIdleStatusText()
+        {
+            if (_controller == null) return;
+
+            if (_controller.State == SlotMachineState.GameOver || (_controller.Balance <= 0 && !_controller.IsInFreeSpins))
+            {
+                SetStatusText(_creditsEmptyMessage);
+            }
+            else if (_controller.Balance < _controller.Bet && !_controller.IsInFreeSpins)
+            {
+                SetStatusText(_insufficientCreditsMessage);
+            }
+            else if (_controller.IsInFreeSpins)
+            {
+                SetStatusText($"FREE SPINS: {_controller.FreeSpinsRemaining} LEFT (2x WINS!)");
+            }
+            else
+            {
+                SetStatusText(_idlePromptMessage);
+            }
+        }
+
         private void HandleStateChanged(SlotMachineState state)
         {
             UpdateButtonStates(state);
@@ -244,8 +298,8 @@ namespace SlotMachine.UI
             switch (state)
             {
                 case SlotMachineState.Idle:
-                    SetStatusText(_idlePromptMessage);
-                    SetLeverState(true, false);
+                    UpdateIdleStatusText();
+                    SetLeverState(_controller != null && _controller.CanSpin, false);
                     break;
 
                 case SlotMachineState.Spinning:
@@ -259,6 +313,11 @@ namespace SlotMachine.UI
 
                 case SlotMachineState.WinCelebration:
                     SetLeverState(true, false);
+                    break;
+
+                case SlotMachineState.GameOver:
+                    SetStatusText(_creditsEmptyMessage);
+                    SetLeverState(false, false);
                     break;
             }
         }
@@ -290,6 +349,12 @@ namespace SlotMachine.UI
                 _cachedBalance = balance;
                 _displayedBalance = balance;
                 if (_balanceText != null) _balanceText.SetText(_balanceFormat, balance);
+            }
+
+            if (_controller != null && _controller.State == SlotMachineState.Idle)
+            {
+                UpdateIdleStatusText();
+                SetLeverState(_controller.CanSpin, false);
             }
 
             UpdateButtonStates(_controller != null ? _controller.State : SlotMachineState.Idle);
@@ -324,6 +389,12 @@ namespace SlotMachine.UI
             _displayedBalance = toBalance;
             if (_balanceText != null) _balanceText.SetText(_balanceFormat, toBalance);
             _countUpRoutine = null;
+
+            if (_controller != null && _controller.State == SlotMachineState.Idle)
+            {
+                UpdateIdleStatusText();
+                SetLeverState(_controller.CanSpin, false);
+            }
         }
 
         private void HandleBetChanged(int bet)
@@ -334,6 +405,21 @@ namespace SlotMachine.UI
                 _betText.SetText(_betFormat, bet);
             }
 
+            if (_controller != null && _controller.State == SlotMachineState.Idle)
+            {
+                UpdateIdleStatusText();
+                SetLeverState(_controller.CanSpin, false);
+            }
+
+            UpdateButtonStates(_controller != null ? _controller.State : SlotMachineState.Idle);
+        }
+
+        private void HandleFreeSpinsChanged(int remaining)
+        {
+            if (remaining > 0)
+            {
+                SetStatusText($"FREE SPINS: {remaining} LEFT (2x WINS!)");
+            }
             UpdateButtonStates(_controller != null ? _controller.State : SlotMachineState.Idle);
         }
 
@@ -394,10 +480,20 @@ namespace SlotMachine.UI
             if (_controller == null) return;
 
             bool isIdle = (state == SlotMachineState.Idle);
+            bool isGameOver = (state == SlotMachineState.GameOver);
+
+            if (isGameOver)
+            {
+                if (_betUpButton != null) _betUpButton.interactable = false;
+                if (_betDownButton != null) _betDownButton.interactable = false;
+                if (_maxBetButton != null) _maxBetButton.interactable = false;
+                return;
+            }
 
             if (_betUpButton != null)
             {
                 _betUpButton.interactable = isIdle &&
+                                            _controller.CanChangeBet &&
                                             _controller.Bet < _controller.MaxBet &&
                                             _controller.Balance > _controller.Bet;
             }
@@ -405,12 +501,14 @@ namespace SlotMachine.UI
             if (_betDownButton != null)
             {
                 _betDownButton.interactable = isIdle &&
+                                              _controller.CanChangeBet &&
                                               _controller.Bet > _controller.MinBet;
             }
 
             if (_maxBetButton != null)
             {
                 _maxBetButton.interactable = isIdle &&
+                                             _controller.CanChangeBet &&
                                              _controller.Bet < _controller.MaxBet &&
                                              _controller.Balance > _controller.Bet;
             }

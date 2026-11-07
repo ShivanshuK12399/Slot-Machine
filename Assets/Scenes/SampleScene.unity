@@ -4974,6 +4974,8 @@ MonoBehaviour:
   _betStep: 10
   _winProbability: 0.33
   _winCelebrationDuration: 1.5
+  _bonusFreeSpinsCount: 5
+  _freeSpinsMultiplier: 2
 --- !u!114 &1858926415
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -5001,6 +5003,8 @@ MonoBehaviour:
   _winFormat: '{0}'
   _idlePromptMessage: PULL LEVER TO PLAY
   _spinningMessage: GOOD LUCK!
+  _insufficientCreditsMessage: INSUFFICIENT CREDITS! LOWER BET
+  _creditsEmptyMessage: OUT OF CREDITS! RESTARTING...
   _countUpDuration: 0.8
 --- !u!1001 &1891078484
 PrefabInstance:
